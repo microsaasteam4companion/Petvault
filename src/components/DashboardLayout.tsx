@@ -2,57 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/contexts/AuthContext';
-import { type Pet } from '@/lib/supabase';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { Badge } from '@/components/ui/badge';
-import { AddEntryModal } from '@/components/AddEntryModal';
-import {
-    LogOut,
-    Plus,
-    Trash2,
-    Search,
-    Heart,
-    Syringe,
-    Stethoscope,
-    Activity,
-    Bone,
-    FileText,
-    Archive,
-    PawPrint,
-    Menu,
-    X,
-    Lock,
-    Bell,
-    CheckCircle2,
-    AlertCircle,
-    MessageSquare,
-} from 'lucide-react';
-import {
-    AlertDialog,
-    AlertDialogAction,
-    AlertDialogCancel,
-    AlertDialogContent,
-    AlertDialogDescription,
-    AlertDialogFooter,
-    AlertDialogHeader,
-    AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import {
-    Sheet,
-    SheetContent,
-    SheetDescription,
-    SheetHeader,
-    SheetTitle,
-    SheetTrigger,
-} from "@/components/ui/sheet";
-import { useToast } from '@/hooks/use-toast';
-import { UpgradeModal } from './UpgradeModal';
-import { NotificationBanner } from './NotificationBanner';
-import { generatePetReport } from '@/lib/pdfGenerator';
-import { supabase } from '@/lib/supabase';
+import { supabase, type Pet } from '@/lib/supabase';
 import { format, addDays, isSameDay } from 'date-fns';
 
 interface DashboardLayoutProps {
