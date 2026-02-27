@@ -7,35 +7,29 @@ const corsHeaders = {
 }
 
 serve(async (req) => {
-    // Handle CORS
     if (req.method === 'OPTIONS') {
         return new Response('ok', { headers: corsHeaders })
     }
 
     try {
-        const supabaseClient = createClient(
-            Deno.env.get('SUPABASE_URL') ?? '',
-            Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-        )
+        const supabaseUrl = Deno.env.get('SUPABASE_URL')
+        const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+        const supabaseClient = createClient(supabaseUrl ?? '', serviceRoleKey ?? '')
 
-        // Log the entire raw request for debugging if needed
-        const payload = await req.json()
-        console.log('--- NEW WEBHOOK EVENT ---')
-        console.log('Event Type:', payload.event_type)
-        console.log('Full Payload:', JSON.stringify(payload, null, 2))
+        const bodyText = await req.text()
+        console.log('Raw Payload:', bodyText)
+        const payload = JSON.parse(bodyText)
 
-        const eventType = payload.event_type
+        // Dodo uses 'type' or 'event_type' depending on some configurations
+        const eventType = payload.type || payload.event_type
+        console.log('Event Type Detected:', eventType)
 
-        // Dodo Payments typically uses 'payment.succeeded' or 'subscription.created'
-        if (eventType === 'payment.succeeded' || eventType === 'order.succeeded') {
+        if (eventType === 'payment.succeeded' || eventType === 'order.succeeded' || payload.data?.status === 'succeeded') {
             const data = payload.data
-
-            // Look for userId in metadata (which comes from query params like metadata_user_id)
             const userId = data.metadata?.user_id || data.client_reference_id
 
             if (userId) {
-                console.log(`Expert Update: Upgrading user ${userId} to Pro plan...`)
-
+                console.log(`Action: Upgrading User ${userId} to Pro...`)
                 const { error } = await supabaseClient
                     .from('profiles')
                     .update({
@@ -46,33 +40,18 @@ serve(async (req) => {
                     .eq('id', userId)
 
                 if (error) {
-                    console.error('DATABASE ERROR:', error)
-                    return new Response(JSON.stringify({ error: 'Database update failed', details: error }), {
-                        status: 500,
-                        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-                    })
+                    console.error('Update Error:', error)
+                    return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders })
                 }
 
-                console.log(`SUCCESS: User ${userId} is now Pro.`)
-                return new Response(JSON.stringify({ message: 'User upgraded successfully' }), {
-                    status: 200,
-                    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-                })
-            } else {
-                console.warn('CRITICAL: Webhook received but NO User ID found in metadata.')
+                console.log('Successfully Upgraded!')
+                return new Response(JSON.stringify({ message: 'Success' }), { status: 200, headers: corsHeaders })
             }
         }
 
-        return new Response(JSON.stringify({ received: true }), {
-            status: 200,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        })
-
-    } catch (error: any) {
-        console.error('WEBHOOK PROCESSING ERROR:', error)
-        return new Response(JSON.stringify({ error: error.message }), {
-            status: 400,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        })
+        return new Response(JSON.stringify({ received: true }), { status: 200, headers: corsHeaders })
+    } catch (err: any) {
+        console.error('Error:', err.message)
+        return new Response(JSON.stringify({ error: err.message }), { status: 400, headers: corsHeaders })
     }
 })
