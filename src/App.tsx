@@ -17,6 +17,7 @@ import PrivacyPolicy from "./pages/PrivacyPolicy";
 import TermsAndConditions from "./pages/TermsAndConditions";
 import BlogListing from "./pages/BlogListing";
 import BlogPost from "./pages/BlogPost";
+import PaymentSuccess from "./pages/PaymentSuccess";
 
 const queryClient = new QueryClient();
 
@@ -65,6 +66,14 @@ function App() {
               <Route path="/blogs/:slug" element={<BlogPost />} />
               <Route path="/privacy-policy" element={<PrivacyPolicy />} />
               <Route path="/terms-and-conditions" element={<TermsAndConditions />} />
+              <Route
+                path="/payment-success"
+                element={
+                  <ProtectedRoute>
+                    <PaymentSuccess />
+                  </ProtectedRoute>
+                }
+              />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </BrowserRouter>

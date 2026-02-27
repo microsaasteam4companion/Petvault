@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { Sparkles, CheckCircle2, Crown, Zap, X } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface UpgradeModalProps {
     open: boolean;
@@ -32,16 +33,28 @@ export function UpgradeModal({
 }: UpgradeModalProps) {
     const navigate = useNavigate();
 
+    const { user } = useAuth();
+
     const handleUpgradeRedirect = () => {
-        onOpenChange(false);
-        navigate('/');
-        // Scroll to pricing after a small delay to ensure navigation is complete
-        setTimeout(() => {
-            const pricingElement = document.getElementById('pricing');
-            if (pricingElement) {
-                pricingElement.scrollIntoView({ behavior: 'smooth' });
-            }
-        }, 100);
+        const paymentUrl = import.meta.env.VITE_DODO_PAYMENT_URL;
+
+        if (paymentUrl && user) {
+            // Check if URL already has query params
+            const separator = paymentUrl.includes('?') ? '&' : '?';
+            // Dodo Payments uses metadata_ prefix for static links to pass metadata
+            const redirectUrl = `${paymentUrl}${separator}metadata_user_id=${user.id}`;
+            window.location.href = redirectUrl;
+        } else {
+            // Fallback to home/pricing if no URL configured
+            onOpenChange(false);
+            navigate('/');
+            setTimeout(() => {
+                const pricingElement = document.getElementById('pricing');
+                if (pricingElement) {
+                    pricingElement.scrollIntoView({ behavior: 'smooth' });
+                }
+            }, 100);
+        }
     };
 
     return (

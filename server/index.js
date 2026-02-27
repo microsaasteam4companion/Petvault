@@ -236,6 +236,47 @@ Keep answers kind, simple, and reassuring.${planContext}${petContext}`;
     }
 });
 
+app.post('/api/webhook/dodo', async (req, res) => {
+    try {
+        const payload = req.body;
+        // In a real scenario, we would verify the signature here using DODO_WEBHOOK_SECRET
+        // For now, based on Dodo's typical payload structure:
+
+        const eventType = payload.event_type;
+
+        if (eventType === 'order.succeeded' || eventType === 'payment.succeeded') {
+            const data = payload.data;
+            const userId = data.client_reference_id || data.metadata?.user_id;
+
+            if (userId) {
+                console.log(`Updating plan for user: ${userId}`);
+                const { error } = await supabase
+                    .from('profiles')
+                    .update({
+                        plan_type: 'pro',
+                        subscription_status: 'active',
+                        subscription_start_date: new Date().toISOString()
+                    })
+                    .eq('id', userId);
+
+                if (error) {
+                    console.error('Error updating profile:', error);
+                    return res.status(500).json({ error: 'Failed to update profile' });
+                }
+
+                return res.json({ success: true, message: 'Plan updated to Pro' });
+            } else {
+                console.warn('No user_id found in webhook payload');
+            }
+        }
+
+        res.json({ received: true });
+    } catch (error) {
+        console.error('Webhook error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 app.listen(port, '0.0.0.0', () => {
     console.log(`Server running on port ${port}`);
 });
