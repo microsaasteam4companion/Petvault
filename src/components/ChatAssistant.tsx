@@ -215,21 +215,17 @@ export const ChatAssistant: React.FC<ChatAssistantProps> = ({ isFullPage = true 
 
         try {
             const { data: { session } } = await supabase.auth.getSession();
-            const response = await fetch('/api/chat', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': session?.access_token ? `Bearer ${session.access_token}` : ''
-                },
-                body: JSON.stringify({
+            const { data, error: functionError } = await supabase.functions.invoke('chat', {
+                body: {
                     message: userMessage,
                     petId: localStorage.getItem('last_selected_pet_id')
-                })
+                },
+                headers: {
+                    'Authorization': session?.access_token ? `Bearer ${session.access_token}` : ''
+                }
             });
 
-            if (!response.ok) throw new Error(`Server error: ${response.status}`);
-
-            const data = await response.json();
+            if (functionError) throw new Error(functionError.message || 'Failed to call AI function');
             if (data.error) throw new Error(data.error);
 
             const newAiMsg: Message = {
