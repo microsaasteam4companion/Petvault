@@ -1,7 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PawPrint, Send, MessageSquare, Loader2, X, Lock } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { db } from '@/lib/firebase';
+import { 
+    collection, 
+    addDoc, 
+    query, 
+    where, 
+    getDocs, 
+    orderBy, 
+    limit,
+    doc,
+    getDoc,
+    Timestamp 
+} from 'firebase/firestore';
 import { ScrollArea } from './ui/scroll-area';
 import { cn } from '@/lib/utils';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -155,7 +167,7 @@ export const ChatAssistant: React.FC<ChatAssistantProps> = ({ isFullPage = true 
     const location = useLocation();
 
     useEffect(() => {
-        if (user) loadHistory(user.id);
+        if (user) loadHistory(user.uid);
     }, [user]);
 
     const scrollToBottom = () => {
@@ -178,21 +190,20 @@ export const ChatAssistant: React.FC<ChatAssistantProps> = ({ isFullPage = true 
 
     const loadHistory = async (userId: string) => {
         try {
-            const { data, error } = await supabase
-                .from('chat_messages')
-                .select('*')
-                .eq('user_id', userId)
-                .order('created_at', { ascending: true })
-                .limit(20);
+            const messagesQ = query(
+                collection(db, 'chat_messages'),
+                where('user_id', '==', userId),
+                orderBy('created_at', 'asc'),
+                limit(20)
+            );
+            const querySnapshot = await getDocs(messagesQ);
+            const history = querySnapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data(),
+                created_at: (doc.data().created_at as Timestamp).toDate().toISOString()
+            })) as Message[];
 
-            if (error) {
-                if (error.code === 'PGRST116' || error.message?.includes('404')) {
-                    console.warn('Chat messages table not found.');
-                } else {
-                    throw error;
-                }
-            }
-            if (data) setMessages(data);
+            setMessages(history);
         } catch (err) {
             console.error('Error loading history:', err);
         }
@@ -214,24 +225,67 @@ export const ChatAssistant: React.FC<ChatAssistantProps> = ({ isFullPage = true 
         setMessages(prev => [...prev, newUserMsg]);
 
         try {
-            const { data: { session } } = await supabase.auth.getSession();
-            const { data, error: functionError } = await supabase.functions.invoke('chat', {
-                body: {
-                    message: userMessage,
-                    petId: localStorage.getItem('last_selected_pet_id')
-                },
-                headers: {
-                    'Authorization': session?.access_token ? `Bearer ${session.access_token}` : ''
-                }
+            // Save user message to Firestore
+            await addDoc(collection(db, 'chat_messages'), {
+                user_id: user?.uid,
+                role: 'user',
+                content: userMessage,
+                created_at: Timestamp.now()
             });
 
-            if (functionError) throw new Error(functionError.message || 'Failed to call AI function');
-            if (data.error) throw new Error(data.error);
+            // Call Groq API (client-side implementation)
+            const groqApiKey = import.meta.env.VITE_GROQ_API_KEY;
+            if (!groqApiKey) {
+                throw new Error("GROQ API Key is missing. Please add VITE_GROQ_API_KEY to your .env file.");
+            }
+
+            const petId = localStorage.getItem('last_selected_pet_id');
+            let petContext = "";
+            if (petId) {
+                const petDoc = await getDoc(doc(db, 'pets', petId));
+                if (petDoc.exists()) {
+                    const pet = petDoc.data();
+                    petContext = `The user is asking about their pet ${pet.name}, who is a ${pet.breed || pet.type}. `;
+                }
+            }
+
+            const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${groqApiKey}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    model: "llama-3.3-70b-versatile",
+                    messages: [
+                        {
+                            role: "system",
+                            content: `You are a helpful pet care assistant for PetVault. ${petContext} Provide concise, caring, and professional advice. If the user mentions medical emergencies like bleeding, seizure, or poison, advise them to contact a veterinarian immediately.`
+                        },
+                        { role: "user", content: userMessage }
+                    ],
+                    temperature: 0.7,
+                    max_tokens: 500,
+                }),
+            });
+
+            const data = await response.json();
+            if (data.error) throw new Error(data.error.message || "Failed to get AI response");
+            
+            const aiResponse = data.choices?.[0]?.message?.content || "I'm sorry, I couldn't process that.";
+
+            // Save AI response to Firestore
+            await addDoc(collection(db, 'chat_messages'), {
+                user_id: user?.uid,
+                role: 'assistant',
+                content: aiResponse,
+                created_at: Timestamp.now()
+            });
 
             const newAiMsg: Message = {
                 id: (Date.now() + 1).toString(),
                 role: 'assistant',
-                content: data.response,
+                content: aiResponse,
                 created_at: new Date().toISOString()
             };
             setMessages(prev => [...prev, newAiMsg]);
@@ -240,7 +294,7 @@ export const ChatAssistant: React.FC<ChatAssistantProps> = ({ isFullPage = true 
             const errorMsg: Message = {
                 id: (Date.now() + 1).toString(),
                 role: 'assistant',
-                content: "I'm having trouble connecting to my brain. Please ensure the server is running or try again later.",
+                content: err.message || "I'm having trouble connecting to my brain. Please try again later.",
                 created_at: new Date().toISOString()
             };
             setMessages(prev => [...prev, errorMsg]);

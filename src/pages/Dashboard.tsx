@@ -1,7 +1,17 @@
 // Dashboard Page - REBUILT TO FIX CACHE ISSUES
 import { useEffect, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { supabase, type Pet } from '@/lib/supabase';
+import { db } from '@/lib/firebase';
+import { 
+    collection, 
+    query, 
+    where, 
+    orderBy, 
+    getDocs, 
+    deleteDoc, 
+    doc 
+} from 'firebase/firestore';
+import type { Pet } from '@/lib/types';
 import { CreatePetProfile } from '@/components/CreatePetProfile';
 import { DashboardLayout } from '@/components/DashboardLayout';
 import { TimelineFeed } from '@/components/TimelineFeed';
@@ -29,22 +39,27 @@ export default function Dashboard() {
         if (!user) return;
 
         try {
-            const { data, error } = await supabase
-                .from('pets')
-                .select('*')
-                .eq('user_id', user.id)
-                .order('created_at', { ascending: false });
+            const q = query(
+                collection(db, 'pets'),
+                where('user_id', '==', user.uid),
+                orderBy('created_at', 'desc')
+            );
 
-            if (error) throw error;
+            const querySnapshot = await getDocs(q);
+            const petsData = querySnapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            })) as Pet[];
 
-            setPets(data || []);
+            setPets(petsData);
 
-            if (!data || data.length === 0) {
+            if (petsData.length === 0) {
                 setShowCreatePet(true);
             } else {
-                setSelectedPetId(data[0].id);
+                setSelectedPetId(petsData[0].id);
             }
         } catch (error: any) {
+            console.error('Error loading pets:', error);
             toast({
                 variant: 'destructive',
                 title: 'Error',
@@ -70,12 +85,7 @@ export default function Dashboard() {
 
     const handleDeletePet = async (petId: string) => {
         try {
-            const { error } = await supabase
-                .from('pets')
-                .delete()
-                .eq('id', petId);
-
-            if (error) throw error;
+            await deleteDoc(doc(db, 'pets', petId));
 
             toast({ title: 'Pet Deleted', description: 'The pet profile has been removed.' });
             loadPets();

@@ -2,7 +2,16 @@ import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/contexts/AuthContext';
-import { supabase, type Pet } from '@/lib/supabase';
+import { db } from '@/lib/firebase';
+import { 
+    collection, 
+    query, 
+    where, 
+    getDocs, 
+    orderBy,
+    limit
+} from 'firebase/firestore';
+import { type Pet } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -113,30 +122,22 @@ export function DashboardLayout({
     const checkReminders = async () => {
         try {
             const tomorrow = addDays(new Date(), 1);
-            const { data, error, status } = await supabase
-                .from('reminders')
-                .select('*')
-                .eq('pet_id', selectedPetId)
-                .eq('status', 'pending');
+            const remindersQ = query(
+                collection(db, 'reminders'),
+                where('pet_id', '==', selectedPetId),
+                where('status', '==', 'pending')
+            );
+            const remindersSnap = await getDocs(remindersQ);
+            const reminders = remindersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-            if (error) {
-                if (status === 404 || error.code === 'PGRST116') {
-                    console.warn('Reminders table not found. Please run the SQL schema to enable reminders.');
-                    return;
-                }
-                throw error;
-            }
-
-            const upcoming = data?.find(r => isSameDay(new Date(r.date), tomorrow));
+            const upcoming = reminders.find(r => isSameDay(new Date(r.date), tomorrow));
             if (upcoming) {
                 setActiveReminder(upcoming);
             } else {
                 setActiveReminder(null);
             }
         } catch (err: any) {
-            if (err.status !== 404) {
-                console.error('Error checking reminders:', err);
-            }
+            console.error('Error checking reminders:', err);
         }
     };
 
@@ -152,26 +153,36 @@ export function DashboardLayout({
         toast({ title: 'Preparing Report', description: `Gathering ${selectedPet.name}'s health history...` });
 
         try {
-            const { data: entries, error: entriesError } = await supabase
-                .from('timeline_entries')
-                .select('*')
-                .eq('pet_id', selectedPetId)
-                .order('date', { ascending: false });
+            const entriesQ = query(
+                collection(db, 'timeline_entries'),
+                where('pet_id', '==', selectedPetId),
+                orderBy('date', 'desc')
+            );
+            const entriesSnap = await getDocs(entriesQ);
+            const entries = entriesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-            if (entriesError) throw entriesError;
+            if (entries.length === 0) {
+                await generatePetReport(selectedPet as any, [], []);
+                toast({ title: 'Report Ready!', description: 'Your PDF has been generated successfully.' });
+                return;
+            }
 
             const entryIds = entries.map(e => e.id);
-            const { data: files, error: filesError } = await supabase
-                .from('files')
-                .select('*')
-                .in('entry_id', entryIds);
-
-            if (filesError) throw filesError;
+            const fileDocs: any[] = [];
+            // Handling 'in' limit
+            for (let i = 0; i < entryIds.length; i += 10) {
+                const chunk = entryIds.slice(i, i + 10);
+                const filesQ = query(collection(db, 'files'), where('entry_id', 'in', chunk));
+                const filesSnap = await getDocs(filesQ);
+                fileDocs.push(...filesSnap.docs);
+            }
+            const files = fileDocs.map(doc => ({ id: doc.id, ...doc.data() }));
 
             await generatePetReport(selectedPet as any, entries, files || []);
 
             toast({ title: 'Report Ready!', description: 'Your PDF has been generated successfully.' });
         } catch (error: any) {
+            console.error('Export failed:', error);
             toast({ variant: 'destructive', title: 'Export Failed', description: error.message });
         } finally {
             setIsExporting(false);

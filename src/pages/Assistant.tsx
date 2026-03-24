@@ -1,7 +1,9 @@
 import { DashboardLayout } from '@/components/DashboardLayout';
 import { ChatAssistant } from '@/components/ChatAssistant';
 import { useAuth } from '@/contexts/AuthContext';
-import { supabase, type Pet } from '@/lib/supabase';
+import { db } from '@/lib/firebase';
+import { collection, query, where, getDocs, orderBy } from 'firebase/firestore';
+import { type Pet } from '@/lib/types';
 import { useEffect, useState } from 'react';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
@@ -32,19 +34,24 @@ export default function AssistantPage() {
 
     const loadPets = async () => {
         try {
-            const { data, error } = await supabase
-                .from('pets')
-                .select('*')
-                .eq('user_id', user?.id)
-                .order('created_at', { ascending: false });
+            const petsQ = query(
+                collection(db, 'pets'),
+                where('user_id', '==', user?.uid),
+                orderBy('created_at', 'desc')
+            );
+            const querySnapshot = await getDocs(petsQ);
+            const petsData = querySnapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            })) as Pet[];
 
-            if (error) throw error;
-            setPets(data || []);
-            if (data && data.length > 0) {
+            setPets(petsData);
+            if (petsData.length > 0) {
                 const lastPetId = localStorage.getItem('last_selected_pet_id');
-                setSelectedPetId(lastPetId || data[0].id);
+                setSelectedPetId(lastPetId || petsData[0].id);
             }
         } catch (error: any) {
+            console.error('Error loading pets:', error);
             toast({
                 variant: 'destructive',
                 title: 'Error',

@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { db, storage } from '@/lib/firebase';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -69,19 +71,15 @@ export function CreatePetProfile({ open, onComplete, canCancel = false, onCancel
 
             if (photoFile) {
                 const fileExt = photoFile.name.split('.').pop();
-                const fileName = `${user.id}/${Date.now()}.${fileExt}`;
-                const { error: uploadError } = await supabase.storage
-                    .from('pet-photos')
-                    .upload(fileName, photoFile);
-                if (uploadError) throw uploadError;
-                const { data: { publicUrl } } = supabase.storage
-                    .from('pet-photos')
-                    .getPublicUrl(fileName);
-                photoUrl = publicUrl;
+                const fileName = `pet-photos/${user.uid}/${Date.now()}.${fileExt}`;
+                const storageRef = ref(storage, fileName);
+                
+                await uploadBytes(storageRef, photoFile);
+                photoUrl = await getDownloadURL(storageRef);
             }
 
-            const { error: insertError } = await supabase.from('pets').insert({
-                user_id: user.id,
+            await addDoc(collection(db, 'pets'), {
+                user_id: user.uid,
                 name: formData.name,
                 breed: formData.breed || null,
                 age: formData.age ? parseInt(formData.age) : null,
@@ -89,13 +87,14 @@ export function CreatePetProfile({ open, onComplete, canCancel = false, onCancel
                 weight: formData.weight ? parseFloat(formData.weight) : null,
                 microchip_id: formData.microchip_id || null,
                 photo_url: photoUrl,
+                created_at: serverTimestamp(),
+                updated_at: serverTimestamp(),
             });
-
-            if (insertError) throw insertError;
 
             toast({ title: 'Welcome Home!', description: `${formData.name} is now part of the family.` });
             onComplete();
         } catch (error: any) {
+            console.error('Error creating pet profile:', error);
             toast({ variant: 'destructive', title: 'Error', description: error.message });
         } finally {
             setLoading(false);

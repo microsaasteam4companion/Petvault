@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { supabase } from "@/lib/supabase";
+import { db } from "@/lib/firebase";
+import { collection, addDoc, query, where, getDocs } from "firebase/firestore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Check, Loader2 } from "lucide-react";
@@ -39,30 +40,27 @@ const SubscribeForm = ({ variant = "hero", compact = false }: SubscribeFormProps
         setError("");
 
         try {
-            const { error: dbError } = await supabase
-                .from("subscribers")
-                .insert([{ email: email.toLowerCase().trim() }]);
-
-            if (dbError) {
-                // Check if it's a duplicate email error
-                if (dbError.code === "23505") {
-                    setError("This email is already subscribed");
-                    toast({
-                        title: "Already Subscribed",
-                        description: "This email is already part of our community!",
-                    });
-                } else {
-                    const errorMsg = dbError.message || "Something went wrong. Please try again.";
-                    setError(`Error: ${errorMsg}`);
-                    toast({
-                        variant: "destructive",
-                        title: "Subscription Failed",
-                        description: errorMsg,
-                    });
-                }
+            const cleanEmail = email.toLowerCase().trim();
+            
+            // Check if email already exists
+            const q = query(collection(db, "subscribers"), where("email", "==", cleanEmail));
+            const querySnapshot = await getDocs(q);
+            
+            if (!querySnapshot.empty) {
+                setError("This email is already subscribed");
+                toast({
+                    title: "Already Subscribed",
+                    description: "This email is already part of our community!",
+                });
                 setLoading(false);
                 return;
             }
+
+            // Insert new subscriber
+            await addDoc(collection(db, "subscribers"), {
+                email: cleanEmail,
+                subscribed_at: new Date().toISOString()
+            });
 
             // Success!
             setSuccess(true);

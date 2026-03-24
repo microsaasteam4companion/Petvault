@@ -1,5 +1,16 @@
 import { useEffect, useState } from 'react';
-import { supabase, type TimelineEntry, type File as FileType } from '@/lib/supabase';
+import { db } from '@/lib/firebase';
+import { 
+    collection, 
+    query, 
+    where, 
+    orderBy, 
+    getDocs, 
+    limit, 
+    startAfter, 
+    QueryDocumentSnapshot 
+} from 'firebase/firestore';
+import type { TimelineEntry, FileEntry } from '@/lib/types';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import { Badge } from '@/components/ui/badge';
@@ -26,7 +37,7 @@ interface TimelineFeedProps {
 }
 
 interface EntryWithFiles extends TimelineEntry {
-    files?: FileType[];
+    files?: FileEntry[];
 }
 
 const categoryConfig: Record<string, { color: string; icon: any }> = {
@@ -43,9 +54,10 @@ export function TimelineFeed({ petId, category = 'all', searchQuery = '' }: Time
     const { profile } = useAuth();
     const { toast } = useToast();
     const [entries, setEntries] = useState<EntryWithFiles[]>([]);
+    const [allLoadedEntries, setAllLoadedEntries] = useState<EntryWithFiles[]>([]);
     const [loading, setLoading] = useState(true);
     const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set());
-    const [page, setPage] = useState(1);
+    const [lastDoc, setLastDoc] = useState<QueryDocumentSnapshot | null>(null);
     const [hasMore, setHasMore] = useState(true);
     const ITEMS_PER_PAGE = 20;
 
@@ -53,60 +65,90 @@ export function TimelineFeed({ petId, category = 'all', searchQuery = '' }: Time
 
     useEffect(() => {
         if (petId) {
-            setPage(1);
-            setHasMore(true);
             loadEntries(true);
         }
-    }, [petId, category, searchQuery]);
+    }, [petId, category]);
+
+    // Client-side filtering for search
+    useEffect(() => {
+        if (!searchQuery) {
+            setEntries(allLoadedEntries);
+            return;
+        }
+
+        const filtered = allLoadedEntries.filter(entry => {
+            const query = searchQuery.toLowerCase();
+            if (isBasic) {
+                return entry.title.toLowerCase().includes(query);
+            } else {
+                return (
+                    entry.title.toLowerCase().includes(query) || 
+                    entry.description.toLowerCase().includes(query)
+                );
+            }
+        });
+        setEntries(filtered);
+    }, [searchQuery, allLoadedEntries, isBasic]);
 
     const loadEntries = async (isInitial = false) => {
-        if (isInitial) setLoading(true);
+        if (isInitial) {
+            setLoading(true);
+            setLastDoc(null);
+            setHasMore(true);
+        }
+        
         try {
-            let query = supabase
-                .from('timeline_entries')
-                .select('*')
-                .eq('pet_id', petId);
+            let q = query(
+                collection(db, 'timeline_entries'),
+                where('pet_id', '==', petId),
+                orderBy('date', 'desc'),
+                limit(ITEMS_PER_PAGE)
+            );
 
             if (category && category !== 'all') {
-                query = query.eq('category', category);
+                q = query(q, where('category', '==', category));
             }
 
-            if (searchQuery) {
-                if (isBasic) {
-                    // Basic: Only title
-                    query = query.ilike('title', `%${searchQuery}%`);
-                } else {
-                    // Pro: Full text search (title + description)
-                    query = query.or(`title.ilike.%${searchQuery}%,description.ilike.%${searchQuery}%`);
-                }
+            if (!isInitial && lastDoc) {
+                q = query(q, startAfter(lastDoc));
             }
 
-            const { data: entriesData, error: entriesError } = await query
-                .order('date', { ascending: false })
-                .range(0, ITEMS_PER_PAGE - 1);
-
-            if (entriesError) throw entriesError;
-
-            if (!entriesData || entriesData.length < ITEMS_PER_PAGE) {
+            const querySnapshot = await getDocs(q);
+            
+            if (querySnapshot.docs.length < ITEMS_PER_PAGE) {
                 setHasMore(false);
             }
 
-            // Load files for each entry
-            if (entriesData) {
-                const entriesWithFiles = await Promise.all(
-                    entriesData.map(async (entry) => {
-                        const { data: files } = await supabase
-                            .from('files')
-                            .select('*')
-                            .eq('entry_id', entry.id);
-                        return { ...entry, files: files || [] };
-                    })
-                );
-                setEntries(entriesWithFiles);
+            if (querySnapshot.docs.length > 0) {
+                setLastDoc(querySnapshot.docs[querySnapshot.docs.length - 1]);
+            }
+
+            const newEntries = await Promise.all(
+                querySnapshot.docs.map(async (docSnap) => {
+                    const entryData = { id: docSnap.id, ...docSnap.data() } as TimelineEntry;
+                    
+                    // Load files for this entry
+                    const filesQ = query(
+                        collection(db, 'files'),
+                        where('entry_id', '==', entryData.id)
+                    );
+                    const filesSnap = await getDocs(filesQ);
+                    const files = filesSnap.docs.map(fDoc => ({
+                        id: fDoc.id,
+                        ...fDoc.data()
+                    })) as FileEntry[];
+
+                    return { ...entryData, files };
+                })
+            );
+
+            if (isInitial) {
+                setAllLoadedEntries(newEntries);
             } else {
-                setEntries([]);
+                setAllLoadedEntries(prev => [...prev, ...newEntries]);
             }
         } catch (error: any) {
+            console.error('Error loading timeline entries:', error);
             toast({
                 variant: 'destructive',
                 title: 'Error',
@@ -117,55 +159,8 @@ export function TimelineFeed({ petId, category = 'all', searchQuery = '' }: Time
         }
     };
 
-    const loadMore = async () => {
-        try {
-            let query = supabase
-                .from('timeline_entries')
-                .select('*')
-                .eq('pet_id', petId);
-
-            if (category && category !== 'all') {
-                query = query.eq('category', category);
-            }
-
-            if (searchQuery) {
-                if (isBasic) {
-                    query = query.ilike('title', `%${searchQuery}%`);
-                } else {
-                    query = query.or(`title.ilike.%${searchQuery}%,description.ilike.%${searchQuery}%`);
-                }
-            }
-
-            const { data: moreEntries, error } = await query
-                .order('date', { ascending: false })
-                .range(page * ITEMS_PER_PAGE, (page + 1) * ITEMS_PER_PAGE - 1);
-
-            if (error) throw error;
-
-            if (!moreEntries || moreEntries.length < ITEMS_PER_PAGE) {
-                setHasMore(false);
-            }
-
-            if (moreEntries) {
-                const entriesWithFiles = await Promise.all(
-                    moreEntries.map(async (entry) => {
-                        const { data: files } = await supabase
-                            .from('files')
-                            .select('*')
-                            .eq('entry_id', entry.id);
-                        return { ...entry, files: files || [] };
-                    })
-                );
-                setEntries((prev) => [...prev, ...entriesWithFiles]);
-                setPage((prev) => prev + 1);
-            }
-        } catch (error: any) {
-            toast({
-                variant: 'destructive',
-                title: 'Error',
-                description: error.message || 'Failed to load more entries.',
-            });
-        }
+    const loadMore = () => {
+        loadEntries(false);
     };
 
     const toggleExpand = (entryId: string) => {
@@ -207,7 +202,9 @@ export function TimelineFeed({ petId, category = 'all', searchQuery = '' }: Time
                     </div>
                     <h3 className="text-xl font-semibold">No entries yet</h3>
                     <p className="text-muted-foreground max-w-md">
-                        Start building your pet's health timeline by adding your first entry.
+                        {searchQuery 
+                            ? "No entries match your search criteria." 
+                            : "Start building your pet's health timeline by adding your first entry."}
                     </p>
                 </div>
             </Card>

@@ -1,7 +1,17 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
-import { supabase, type File as FileType } from '@/lib/supabase';
+import { db, storage } from '@/lib/firebase';
+import { 
+    collection, 
+    query, 
+    where, 
+    getDocs, 
+    deleteDoc, 
+    doc 
+} from 'firebase/firestore';
+import { ref, deleteObject } from 'firebase/storage';
+import { type TimelineEntry, type FileEntry } from '@/lib/types';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -40,12 +50,13 @@ import {
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
-interface FileWithEntry extends FileType {
+interface FileWithEntry extends FileEntry {
     entry?: {
         title: string;
         category: string;
         date: string;
     };
+    uploaded_at: string; // Map from created_at in types
 }
 
 type ViewMode = 'grid' | 'list';
@@ -87,49 +98,61 @@ export default function Vault() {
 
         setLoading(true);
         try {
-            const { data: pets, error: petsError } = await supabase
-                .from('pets')
-                .select('id')
-                .eq('user_id', user.id);
+            // 1. Get user's pets
+            const petsQ = query(collection(db, 'pets'), where('user_id', '==', user.uid));
+            const petsSnap = await getDocs(petsQ);
+            const petIds = petsSnap.docs.map(doc => doc.id);
 
-            if (petsError) throw petsError;
-
-            if (!pets || pets.length === 0) {
+            if (petIds.length === 0) {
                 setFiles([]);
                 return;
             }
 
-            const petIds = pets.map((p) => p.id);
+            // 2. Get entries for those pets
+            // Handling 'in' limit of 10
+            const entryDocs: any[] = [];
+            for (let i = 0; i < petIds.length; i += 10) {
+                const chunk = petIds.slice(i, i + 10);
+                const entriesQ = query(collection(db, 'timeline_entries'), where('pet_id', 'in', chunk));
+                const entriesSnap = await getDocs(entriesQ);
+                entryDocs.push(...entriesSnap.docs);
+            }
 
-            const { data: entries, error: entriesError } = await supabase
-                .from('timeline_entries')
-                .select('id, title, category, date')
-                .in('pet_id', petIds);
-
-            if (entriesError) throw entriesError;
-
-            if (!entries || entries.length === 0) {
+            if (entryDocs.length === 0) {
                 setFiles([]);
                 return;
             }
 
-            const entryIds = entries.map((e) => e.id);
+            const entries = entryDocs.map(doc => ({ id: doc.id, ...doc.data() }));
+            const entryIds = entries.map(e => e.id);
 
-            const { data: filesData, error: filesError } = await supabase
-                .from('files')
-                .select('*')
-                .in('entry_id', entryIds);
+            // 3. Get files for those entries
+            const fileDocs: any[] = [];
+            for (let i = 0; i < entryIds.length; i += 10) {
+                const chunk = entryIds.slice(i, i + 10);
+                const filesQ = query(collection(db, 'files'), where('entry_id', 'in', chunk));
+                const filesSnap = await getDocs(filesQ);
+                fileDocs.push(...filesSnap.docs);
+            }
 
-            if (filesError) throw filesError;
-
-            const filesWithEntries =
-                filesData?.map((file) => ({
-                    ...file,
-                    entry: entries.find((e) => e.id === file.entry_id),
-                })) || [];
+            const filesWithEntries = fileDocs.map((fDoc) => {
+                const fileData = fDoc.data();
+                const entry = entries.find((e) => e.id === fileData.entry_id);
+                return {
+                    id: fDoc.id,
+                    ...fileData,
+                    entry: entry ? {
+                        title: entry.title,
+                        category: entry.category,
+                        date: entry.date
+                    } : undefined,
+                    uploaded_at: fileData.created_at?.toDate?.()?.toISOString() || new Date().toISOString()
+                } as FileWithEntry;
+            });
 
             setFiles(filesWithEntries);
         } catch (error: any) {
+            console.error('Error loading files:', error);
             toast({
                 variant: 'destructive',
                 title: 'Error',
@@ -186,19 +209,22 @@ export default function Vault() {
 
     const deleteFile = async (fileId: string, fileUrl: string) => {
         try {
-            const urlParts = fileUrl.split('/');
-            const bucketIndex = urlParts.findIndex((part) => part === 'entry-files');
-            const filePath = urlParts.slice(bucketIndex + 1).join('/');
+            // 1. Delete from Storage
+            // Need to extract the path from URL or have it stored.
+            // For now, attempting to delete by URL/reference if possible
+            // In Firebase, it's better to store the full path as well.
+            // But let's try to parse the path from the URL.
+            // Example URL: https://firebasestorage.googleapis.com/v0/b/[bucket]/o/[path]?alt=media
+            const decodedUrl = decodeURIComponent(fileUrl);
+            const pathStartIndex = decodedUrl.indexOf('/o/') + 3;
+            const pathEndIndex = decodedUrl.indexOf('?');
+            const filePath = decodedUrl.substring(pathStartIndex, pathEndIndex);
+            
+            const storageRef = ref(storage, filePath);
+            await deleteObject(storageRef);
 
-            const { error: storageError } = await supabase.storage
-                .from('entry-files')
-                .remove([filePath]);
-
-            if (storageError) throw storageError;
-
-            const { error: dbError } = await supabase.from('files').delete().eq('id', fileId);
-
-            if (dbError) throw dbError;
+            // 2. Delete from Firestore
+            await deleteDoc(doc(db, 'files', fileId));
 
             setFiles((prev) => prev.filter((f) => f.id !== fileId));
 
@@ -207,6 +233,7 @@ export default function Vault() {
                 description: 'File has been deleted.',
             });
         } catch (error: any) {
+            console.error('Error deleting file:', error);
             toast({
                 variant: 'destructive',
                 title: 'Error',
